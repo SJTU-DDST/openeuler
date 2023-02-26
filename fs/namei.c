@@ -3637,7 +3637,7 @@ int vfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 		return -EPERM;
 
 	mode &= (S_IRWXUGO|S_ISVTX);
-	error = security_inode_mkdir(dir, dentry, mode);
+	error = security_inode_mkdir(dir, dentry, mode);//nothing here
 	if (error)
 		return error;
 
