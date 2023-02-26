@@ -51,12 +51,12 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 	if (res)
 		goto out;
 
-	if (shared)
-		res = down_read_killable(&inode->i_rwsem);
-	else
-		res = down_write_killable(&inode->i_rwsem);
-	if (res)
-		goto out;
+	// if (shared)
+	// 	res = down_read_killable(&inode->i_rwsem);
+	// else
+	// 	res = down_write_killable(&inode->i_rwsem);
+	// if (res)
+	// 	goto out;
 
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
@@ -69,10 +69,10 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 		fsnotify_access(file);
 		file_accessed(file);
 	}
-	if (shared)
-		inode_unlock_shared(inode);
-	else
-		inode_unlock(inode);
+	// if (shared)
+	// 	inode_unlock_shared(inode);
+	// else
+	// 	inode_unlock(inode);
 out:
 	return res;
 }
