@@ -84,6 +84,9 @@
 
 #include <linux/uaccess.h>
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 /*
  * There are five quota SMP locks:
  * * dq_list_lock protects all lists with quotas and quota formats.
@@ -959,13 +962,62 @@ static int dqinit_needed(struct inode *inode, int type)
 }
 
 /* This routine is guarded by s_umount semaphore */
-static int add_dquot_ref(struct super_block *sb, int type)
+static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 {
 	struct inode *inode, *old_inode = NULL;
 #ifdef CONFIG_QUOTA_DEBUG
 	int reserved = 0;
 #endif
 	int err = 0;
+
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				spin_lock(&inode->i_lock);
+				if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+					!atomic_read(&inode->i_writecount) ||
+					!dqinit_needed(inode, type)) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+#ifdef CONFIG_QUOTA_DEBUG
+				if (unlikely(inode_get_rsv_space(inode) > 0))
+					reserved = 1;
+#endif
+				iput(old_inode);
+				err = __dquot_initialize(inode, type);
+				if (err) {
+					iput(inode);
+					spin_unlock(lock);
+					goto out_euler;
+				}
+
+				old_inode = inode;
+				cond_resched();
+			}
+			spin_unlock(lock);				
+		}
+		iput(old_inode);
+out_euler:
+#ifdef CONFIG_QUOTA_DEBUG
+		if (reserved) {
+			quota_error(sb, "Writes happened before quota was turned on "
+				"thus quota information is probably inconsistent. "
+				"Please run quotacheck(8)");
+		}
+#endif
+		return err;
+	}
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
@@ -1068,12 +1120,46 @@ static void put_dquot_list(struct list_head *tofree_head)
 }
 
 static void remove_dquot_ref(struct super_block *sb, int type,
-		struct list_head *tofree_head)
+		struct list_head *tofree_head)//euler_trick
 {
 	struct inode *inode;
 #ifdef CONFIG_QUOTA_DEBUG
 	int reserved = 0;
 #endif
+
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+
+				spin_lock(&dq_data_lock);
+				if (!IS_NOQUOTA(inode)) {
+#ifdef CONFIG_QUOTA_DEBUG
+					if (unlikely(inode_get_rsv_space(inode) > 0))
+						reserved = 1;
+#endif
+					remove_inode_dquot_ref(inode, type, tofree_head);
+				}
+				spin_unlock(&dq_data_lock);
+			}
+			spin_unlock(lock);
+		}
+#ifdef CONFIG_QUOTA_DEBUG
+		if (reserved) {
+			printk(KERN_WARNING "VFS (%s): Writes happened after quota"
+				" was disabled thus quota information is probably "
+				"inconsistent. Please run quotacheck(8).\n", sb->s_id);
+		}
+#endif
+		return ;	
+	}
+
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {

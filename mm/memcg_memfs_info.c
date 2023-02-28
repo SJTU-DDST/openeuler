@@ -7,6 +7,9 @@
 #include <linux/slab.h>
 #include "../fs/mount.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 #define SEQ_printf(m, x...)			\
 do {						\
 	if (m)					\
@@ -118,7 +121,7 @@ static void memfs_show_file_in_mem_cgroup(void *data, struct inode *inode)
 		   size >> 10, inode->i_size >> 10, filepath);
 }
 
-static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)
+static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)//eulerfs_trick
 {
 	struct print_files_control *pfc = data;
 	struct inode *inode, *toput_inode = NULL;
@@ -130,6 +133,42 @@ static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)
 	pfc->vfsmnt = memfs_get_vfsmount(sb);
 	if (!pfc->vfsmnt)
 		return;
+
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				spin_lock(&inode->i_lock);
+
+				if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+					(inode->i_mapping->nrpages == 0 && !need_resched())) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+				memfs_show_file_in_mem_cgroup(pfc, inode);
+
+				iput(toput_inode);
+				toput_inode = inode;
+
+				cond_resched();
+
+			}
+			spin_unlock(lock);
+		}
+		iput(toput_inode);
+		mntput(pfc->vfsmnt);
+		return ;	
+	}
+
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {

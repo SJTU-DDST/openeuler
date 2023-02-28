@@ -51,6 +51,17 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 	if (res)
 		goto out;
 
+	if(inode->i_sb->s_magic == 0x50CA){
+		;
+	}else{
+		if (shared)
+			res = down_read_killable(&inode->i_rwsem);
+		else
+			res = down_write_killable(&inode->i_rwsem);
+		if (res)
+			goto out;
+	}
+
 	// if (shared)
 	// 	res = down_read_killable(&inode->i_rwsem);
 	// else
@@ -69,6 +80,16 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 		fsnotify_access(file);
 		file_accessed(file);
 	}
+	
+	if(inode->i_sb->s_magic == 0x50CA){
+		;
+	}else{
+		if (shared)
+			inode_unlock_shared(inode);
+		else
+			inode_unlock(inode);
+	}
+
 	// if (shared)
 	// 	inode_unlock_shared(inode);
 	// else

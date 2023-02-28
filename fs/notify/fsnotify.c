@@ -14,6 +14,9 @@
 #include <linux/fsnotify_backend.h>
 #include "fsnotify.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 /*
  * Clear all of the marks on an inode when it is being evicted from core
  */
@@ -35,9 +38,57 @@ void __fsnotify_vfsmount_delete(struct vfsmount *mnt)
  * Called during unmount with no locks held, so needs to be safe against
  * concurrent modifiers. We temporarily drop sb->s_inode_list_lock and CAN block.
  */
-static void fsnotify_unmount_inodes(struct super_block *sb)
+static void fsnotify_unmount_inodes(struct super_block *sb)//euler_trick
 {
 	struct inode *inode, *iput_inode = NULL;
+
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				
+				spin_lock(&inode->i_lock);
+				if (inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+
+				if (!atomic_read(&inode->i_count)) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+				if (iput_inode)
+					iput(iput_inode);
+
+				fsnotify_inode(inode, FS_UNMOUNT);
+
+				fsnotify_inode_delete(inode);
+
+				iput_inode = inode;
+
+				cond_resched();
+			}
+			spin_unlock(lock);				
+		}
+
+		if (iput_inode)
+			iput(iput_inode);
+		/* Wait for outstanding inode references from connectors */
+		wait_var_event(&sb->s_fsnotify_inode_refs,
+				!atomic_long_read(&sb->s_fsnotify_inode_refs));
+
+		return ;
+	}
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {

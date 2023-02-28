@@ -40,6 +40,9 @@
 #include <uapi/linux/mount.h>
 #include "internal.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 static int thaw_super_locked(struct super_block *sb);
 
 static LIST_HEAD(super_blocks);
@@ -203,6 +206,7 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 	struct super_block *s = kzalloc(sizeof(struct super_block),  GFP_USER);
 	static const struct super_operations default_op;
 	int i;
+	int cpu;
 
 	if (!s)
 		return NULL;
@@ -246,6 +250,17 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 	INIT_HLIST_BL_HEAD(&s->s_roots);
 	mutex_init(&s->s_sync_lock);
 	INIT_LIST_HEAD(&s->s_inodes);
+
+	//euler_trick
+
+	s->eulerfs_s_inode_list_lock = alloc_percpu(spinlock_t);
+	for_each_possible_cpu(cpu)
+		spin_lock_init(per_cpu_ptr(s->eulerfs_s_inode_list_lock, cpu));
+
+	s->eulerfs_s_inodes = alloc_percpu(struct list_head);
+	for_each_possible_cpu(cpu)
+		INIT_LIST_HEAD(per_cpu_ptr(s->eulerfs_s_inodes, cpu));
+
 	spin_lock_init(&s->s_inode_list_lock);
 	INIT_LIST_HEAD(&s->s_inodes_wb);
 	spin_lock_init(&s->s_inode_wblist_lock);

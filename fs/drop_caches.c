@@ -11,12 +11,48 @@
 #include <linux/gfp.h>
 #include "internal.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 /* A global variable is a bit ugly, but it keeps the code simple */
 int sysctl_drop_caches;
 
-static void drop_pagecache_sb(struct super_block *sb, void *unused)
+static void drop_pagecache_sb(struct super_block *sb, void *unused)//eulerfs_trick
 {
 	struct inode *inode, *toput_inode = NULL;
+
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				spin_lock(&inode->i_lock);
+
+
+				if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+					(inode->i_mapping->nrpages == 0 && !need_resched())) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+				invalidate_mapping_pages(inode->i_mapping, 0, -1);
+				iput(toput_inode);
+				toput_inode = inode;
+				
+				cond_resched();
+			}
+			spin_unlock(lock);				
+		}
+		iput(toput_inode);
+		return ;
+	}
 
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {

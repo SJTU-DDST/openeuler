@@ -36,6 +36,9 @@
 #include <linux/suspend.h>
 #include "internal.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 struct bdev_inode {
 	struct block_device bdev;
 	struct inode vfs_inode;
@@ -977,11 +980,27 @@ struct block_device *bdget_part(struct hd_struct *part)
 	return bdget(part_devt(part));
 }
 
-long nr_blockdev_pages(void)
+long nr_blockdev_pages(void)//eulerfs_trick
 {
 	struct inode *inode;
 	long ret = 0;
-
+	
+	if(blockdev_superblock->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list)
+				ret += inode->i_mapping->nrpages;
+			spin_unlock(lock);
+		}
+		return ret;	
+	}
+	
 	spin_lock(&blockdev_superblock->s_inode_list_lock);
 	list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list)
 		ret += inode->i_mapping->nrpages;
@@ -2166,9 +2185,46 @@ int __invalidate_device(struct block_device *bdev, bool kill_dirty)
 }
 EXPORT_SYMBOL(__invalidate_device);
 
-void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
+void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eulerfs_trick
 {
 	struct inode *inode, *old_inode = NULL;
+	
+	if(blockdev_superblock->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				struct address_space *mapping = inode->i_mapping;
+				struct block_device *bdev;
+
+				spin_lock(&inode->i_lock);
+				if (inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW) ||
+					mapping->nrpages == 0) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+				iput(old_inode);
+				old_inode = inode;
+				bdev = I_BDEV(inode);
+
+				mutex_lock(&bdev->bd_mutex);
+				if (bdev->bd_openers)
+					func(bdev, arg);
+				mutex_unlock(&bdev->bd_mutex);
+			}
+			spin_unlock(lock);				
+		}
+		iput(old_inode);
+		return ;	
+	}
 
 	spin_lock(&blockdev_superblock->s_inode_list_lock);
 	list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list) {
@@ -2177,7 +2233,7 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
 
 		spin_lock(&inode->i_lock);
 		if (inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW) ||
-		    mapping->nrpages == 0) {
+			mapping->nrpages == 0) {
 			spin_unlock(&inode->i_lock);
 			continue;
 		}
@@ -2185,13 +2241,13 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
 		spin_unlock(&inode->i_lock);
 		spin_unlock(&blockdev_superblock->s_inode_list_lock);
 		/*
-		 * We hold a reference to 'inode' so it couldn't have been
-		 * removed from s_inodes list while we dropped the
-		 * s_inode_list_lock  We cannot iput the inode now as we can
-		 * be holding the last reference and we cannot iput it under
-		 * s_inode_list_lock. So we keep the reference and iput it
-		 * later.
-		 */
+		* We hold a reference to 'inode' so it couldn't have been
+		* removed from s_inodes list while we dropped the
+		* s_inode_list_lock  We cannot iput the inode now as we can
+		* be holding the last reference and we cannot iput it under
+		* s_inode_list_lock. So we keep the reference and iput it
+		* later.
+		*/
 		iput(old_inode);
 		old_inode = inode;
 		bdev = I_BDEV(inode);
@@ -2204,5 +2260,5 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
 		spin_lock(&blockdev_superblock->s_inode_list_lock);
 	}
 	spin_unlock(&blockdev_superblock->s_inode_list_lock);
-	iput(old_inode);
+	iput(old_inode);			
 }

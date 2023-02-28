@@ -24,6 +24,9 @@
 #include <trace/events/writeback.h>
 #include "internal.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 /*
  * Inode locking rules:
  *
@@ -457,16 +460,42 @@ static void inode_lru_list_del(struct inode *inode)
  * inode_sb_list_add - add inode to the superblock list of inodes
  * @inode: inode to add
  */
-void inode_sb_list_add(struct inode *inode)
+void inode_sb_list_add(struct inode *inode)//eulerfs_trick
 {
+	if(inode->i_sb->s_magic == 0x50CA){
+		int cpu;
+		spinlock_t *lock;
+		cpu = get_cpu();
+		put_cpu();
+		lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, cpu);
+		spin_lock(lock);
+		list_add(&inode->i_sb_list, per_cpu_ptr(inode->i_sb->eulerfs_s_inodes, cpu));
+		inode->i_sb_list_cpu = cpu;
+		spin_unlock(lock);
+		return ;
+	}
+
 	spin_lock(&inode->i_sb->s_inode_list_lock);
 	list_add(&inode->i_sb_list, &inode->i_sb->s_inodes);
 	spin_unlock(&inode->i_sb->s_inode_list_lock);
 }
 EXPORT_SYMBOL_GPL(inode_sb_list_add);
 
-static inline void inode_sb_list_del(struct inode *inode)
+static inline void inode_sb_list_del(struct inode *inode)//eulerfs_trick
 {
+	if(inode->i_sb->s_magic == 0x50CA){
+		if (!list_empty(&inode->i_sb_list)) {
+			int cpu;
+			spinlock_t *lock;
+			lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, inode->i_sb_list_cpu);
+			spin_lock(lock);
+			list_del_init(&inode->i_sb_list);
+			spin_unlock(lock);
+			return ;
+		}
+		return ;
+	}
+
 	if (!list_empty(&inode->i_sb_list)) {
 		spin_lock(&inode->i_sb->s_inode_list_lock);
 		list_del_init(&inode->i_sb_list);
@@ -630,10 +659,48 @@ static void dispose_list(struct list_head *head)
  * so any inode reaching zero refcount during or after that call will
  * be immediately evicted.
  */
-void evict_inodes(struct super_block *sb)
+void evict_inodes(struct super_block *sb)//euler_trick
 {
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
+
+again_euler:
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry_safe(inode, next, head, i_sb_list){
+				if (atomic_read(&inode->i_count))
+					continue;
+
+				spin_lock(&inode->i_lock);
+				if (inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE)) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+
+				inode->i_state |= I_FREEING;
+				inode_lru_list_del(inode);
+				spin_unlock(&inode->i_lock);
+				list_add(&inode->i_lru, &dispose);
+
+				if (need_resched()) {
+					cond_resched();
+					dispose_list(&dispose);
+					spin_unlock(lock);	
+					goto again_euler;
+				}
+			}
+			spin_unlock(lock);				
+		}
+		dispose_list(&dispose);
+		return ;
+	}
 
 again:
 	spin_lock(&sb->s_inode_list_lock);
@@ -680,11 +747,56 @@ EXPORT_SYMBOL_GPL(evict_inodes);
  * If @kill_dirty is set, discard dirty inodes too, otherwise treat
  * them as busy.
  */
-int invalidate_inodes(struct super_block *sb, bool kill_dirty)
+int invalidate_inodes(struct super_block *sb, bool kill_dirty)//euler_trick
 {
 	int busy = 0;
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
+
+again_euler:
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry_safe(inode, next, head, i_sb_list){
+				spin_lock(&inode->i_lock);
+				if (inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE)) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				if (inode->i_state & I_DIRTY_ALL && !kill_dirty) {
+					spin_unlock(&inode->i_lock);
+					busy = 1;
+					continue;
+				}
+				if (atomic_read(&inode->i_count)) {
+					spin_unlock(&inode->i_lock);
+					busy = 1;
+					continue;
+				}
+
+				inode->i_state |= I_FREEING;
+				inode_lru_list_del(inode);
+				spin_unlock(&inode->i_lock);
+				list_add(&inode->i_lru, &dispose);
+				if (need_resched()) {
+					cond_resched();
+					dispose_list(&dispose);
+					spin_unlock(lock);
+					goto again_euler;
+				}
+			}
+			spin_unlock(lock);				
+		}
+		dispose_list(&dispose);
+
+		return busy;
+	}
 
 again:
 	spin_lock(&sb->s_inode_list_lock);

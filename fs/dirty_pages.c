@@ -15,6 +15,9 @@
 #include <linux/init.h>
 #include "internal.h"
 
+#include <linux/byteorder/generic.h>
+#include <linux/percpu.h>
+
 static char *buf_dirty;	/* buffer to store number of dirty pages */
 static unsigned long buf_size;	/* size of buffer in bytes */
 static long buff_num;	/* size of buffer in number of pages */
@@ -102,7 +105,7 @@ static inline bool is_sb_writable(struct super_block *sb)
  * if it's not less than the threshold. The inode in unusual state will
  * be skipped.
  */
-static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)
+static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)//eulerfs_trick
 {
 	struct inode *inode, *toput_inode = NULL;
 	unsigned long nr_dirtys;
@@ -118,17 +121,74 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)
 	if (!tmpname)
 		return;
 
+	if(sb->s_magic == 0x50CA){
+		const struct cpumask *mask = cpumask_of_node(numa_node_id());
+		int cpu;
+		struct list_head *head;
+		spinlock_t *lock;
+		for_each_cpu(cpu, mask){
+			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
+			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+			spin_lock(lock);
+			list_for_each_entry(inode, head, i_sb_list){
+				spin_lock(&inode->i_lock);
+
+				if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+					(inode->i_mapping->nrpages == 0 && !need_resched())) {
+					spin_unlock(&inode->i_lock);
+					continue;
+				}
+				__iget(inode);
+				spin_unlock(&inode->i_lock);
+
+				cond_resched();
+
+				nr_dirtys = dump_dirtypages_inode(inode);
+				if (!nr_dirtys || nr_dirtys < limit)
+					goto skip_eulerfs;
+
+				filename = inode_filename(inode, tmpname);
+				if (IS_ERR_OR_NULL(filename))
+					filename = "unknown";
+
+				if (sb->s_type && sb->s_type->name)
+					fstype = sb->s_type->name;
+				else
+					fstype = "unknown";
+
+				if (m->size <= m->count) {
+					seq_set_overflow(m);
+					strncpy(m->buf+m->count-12, "terminated\n\0", 12);
+					spin_unlock(lock);
+					goto done_eulerfs;
+				}
+				seq_printf(m, "FSType: %s, Dev ID: %u(%u:%u) ino %lu, dirty pages %lu, path %s\n",
+					fstype, sb->s_dev, MAJOR(sb->s_dev),
+					MINOR(sb->s_dev), inode->i_ino,
+					nr_dirtys, filename);
+skip_eulerfs:
+				iput(toput_inode);
+				toput_inode = inode;
+			}
+			spin_unlock(lock);				
+		}
+done_eulerfs:
+		iput(toput_inode);
+		kfree(tmpname);
+		return ;
+	}
+		
 	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 		spin_lock(&inode->i_lock);
 
 		/*
-		 * We must skip inodes in unusual state. We may also skip
-		 * inodes without pages but we deliberately won't in case
-		 * we need to reschedule to avoid softlockups.
-		 */
+		* We must skip inodes in unusual state. We may also skip
+		* inodes without pages but we deliberately won't in case
+		* we need to reschedule to avoid softlockups.
+		*/
 		if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
-		    (inode->i_mapping->nrpages == 0 && !need_resched())) {
+			(inode->i_mapping->nrpages == 0 && !need_resched())) {
 			spin_unlock(&inode->i_lock);
 			continue;
 		}
@@ -151,11 +211,11 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)
 		else
 			fstype = "unknown";
 		/*
-		 * seq_printf return nothing, if the buffer is exhausted
-		 * (m->size <= m->count), seq_printf will not store
-		 * anything, just set m->count = m->size and return. In
-		 * that case, log a warn message in buffer to remind users.
-		 */
+		* seq_printf return nothing, if the buffer is exhausted
+		* (m->size <= m->count), seq_printf will not store
+		* anything, just set m->count = m->size and return. In
+		* that case, log a warn message in buffer to remind users.
+		*/
 		if (m->size <= m->count) {
 			seq_set_overflow(m);
 			strncpy(m->buf+m->count-12, "terminated\n\0", 12);
@@ -173,7 +233,7 @@ skip:
 	spin_unlock(&sb->s_inode_list_lock);
 done:
 	iput(toput_inode);
-	kfree(tmpname);
+	kfree(tmpname);	
 }
 
 static int proc_dpages_show(struct seq_file *m, void *v)
