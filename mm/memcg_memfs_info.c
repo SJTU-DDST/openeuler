@@ -134,11 +134,13 @@ static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)//
 	if (!pfc->vfsmnt)
 		return;
 
+	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
@@ -153,6 +155,7 @@ static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)//
 				}
 				__iget(inode);
 				spin_unlock(&inode->i_lock);
+				spin_unlock(lock);
 
 				memfs_show_file_in_mem_cgroup(pfc, inode);
 
@@ -160,7 +163,7 @@ static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)//
 				toput_inode = inode;
 
 				cond_resched();
-
+				spin_lock(lock);
 			}
 			spin_unlock(lock);
 		}

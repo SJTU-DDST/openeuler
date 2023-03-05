@@ -462,9 +462,11 @@ static void inode_lru_list_del(struct inode *inode)
  */
 void inode_sb_list_add(struct inode *inode)//eulerfs_trick
 {
+	printk("%s\n", __func__);
 	if(inode->i_sb->s_magic == 0x50CA){
 		int cpu;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		cpu = get_cpu();
 		put_cpu();
 		lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, cpu);
@@ -483,10 +485,12 @@ EXPORT_SYMBOL_GPL(inode_sb_list_add);
 
 static inline void inode_sb_list_del(struct inode *inode)//eulerfs_trick
 {
+	printk("%s\n", __func__);
 	if(inode->i_sb->s_magic == 0x50CA){
 		if (!list_empty(&inode->i_sb_list)) {
 			int cpu;
 			spinlock_t *lock;
+			printk("%s:enter eulerfs branch\n", __func__);
 			lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, inode->i_sb_list_cpu);
 			spin_lock(lock);
 			list_del_init(&inode->i_sb_list);
@@ -663,6 +667,7 @@ void evict_inodes(struct super_block *sb)//euler_trick
 {
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
+	printk("%s\n", __func__);
 
 again_euler:
 	if(sb->s_magic == 0x50CA){
@@ -670,6 +675,7 @@ again_euler:
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
@@ -690,9 +696,9 @@ again_euler:
 				list_add(&inode->i_lru, &dispose);
 
 				if (need_resched()) {
-					cond_resched();
-					dispose_list(&dispose);
 					spin_unlock(lock);	
+					cond_resched();
+					dispose_list(&dispose);	
 					goto again_euler;
 				}
 			}
@@ -753,12 +759,14 @@ int invalidate_inodes(struct super_block *sb, bool kill_dirty)//euler_trick
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
 
+	printk("%s\n", __func__);
 again_euler:
 	if(sb->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
@@ -785,9 +793,9 @@ again_euler:
 				spin_unlock(&inode->i_lock);
 				list_add(&inode->i_lru, &dispose);
 				if (need_resched()) {
+					spin_unlock(lock);
 					cond_resched();
 					dispose_list(&dispose);
-					spin_unlock(lock);
 					goto again_euler;
 				}
 			}

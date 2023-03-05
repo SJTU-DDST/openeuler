@@ -121,11 +121,13 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)//eule
 	if (!tmpname)
 		return;
 
+	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
@@ -140,6 +142,7 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)//eule
 				}
 				__iget(inode);
 				spin_unlock(&inode->i_lock);
+				spin_unlock(lock);
 
 				cond_resched();
 
@@ -159,7 +162,6 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)//eule
 				if (m->size <= m->count) {
 					seq_set_overflow(m);
 					strncpy(m->buf+m->count-12, "terminated\n\0", 12);
-					spin_unlock(lock);
 					goto done_eulerfs;
 				}
 				seq_printf(m, "FSType: %s, Dev ID: %u(%u:%u) ino %lu, dirty pages %lu, path %s\n",
@@ -169,6 +171,7 @@ static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)//eule
 skip_eulerfs:
 				iput(toput_inode);
 				toput_inode = inode;
+				spin_lock(lock);
 			}
 			spin_unlock(lock);				
 		}

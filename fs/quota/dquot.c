@@ -969,12 +969,13 @@ static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 	int reserved = 0;
 #endif
 	int err = 0;
-
+	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
@@ -989,6 +990,7 @@ static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 				}
 				__iget(inode);
 				spin_unlock(&inode->i_lock);
+				spin_unlock(lock);
 
 #ifdef CONFIG_QUOTA_DEBUG
 				if (unlikely(inode_get_rsv_space(inode) > 0))
@@ -998,12 +1000,12 @@ static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 				err = __dquot_initialize(inode, type);
 				if (err) {
 					iput(inode);
-					spin_unlock(lock);
 					goto out_euler;
 				}
 
 				old_inode = inode;
 				cond_resched();
+				spin_lock(lock);
 			}
 			spin_unlock(lock);				
 		}
@@ -1127,11 +1129,13 @@ static void remove_dquot_ref(struct super_block *sb, int type,
 	int reserved = 0;
 #endif
 
+	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);

@@ -985,11 +985,13 @@ long nr_blockdev_pages(void)//eulerfs_trick
 	struct inode *inode;
 	long ret = 0;
 	
+	printk("%s\n", __func__);
 	if(blockdev_superblock->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
@@ -2189,11 +2191,13 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eule
 {
 	struct inode *inode, *old_inode = NULL;
 	
+	printk("%s\n", __func__);
 	if(blockdev_superblock->s_magic == 0x50CA){
 		const struct cpumask *mask = cpumask_of_node(numa_node_id());
 		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
+		printk("%s:enter eulerfs branch\n", __func__);
 		for_each_cpu(cpu, mask){
 			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
 			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
@@ -2210,6 +2214,7 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eule
 				}
 				__iget(inode);
 				spin_unlock(&inode->i_lock);
+				spin_unlock(lock);
 
 				iput(old_inode);
 				old_inode = inode;
@@ -2219,6 +2224,8 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eule
 				if (bdev->bd_openers)
 					func(bdev, arg);
 				mutex_unlock(&bdev->bd_mutex);
+
+				spin_lock(lock);
 			}
 			spin_unlock(lock);				
 		}
