@@ -120,6 +120,47 @@ static void memfs_show_file_in_mem_cgroup(void *data, struct inode *inode)
 
 static void memfs_show_files_in_mem_cgroup(struct super_block *sb, void *data)
 {
+	if(sb->s_magic == 0X50CA){
+		struct print_files_control *pfc = data;
+		struct inode *inode, *toput_inode = NULL;
+		DEFINE_PCPU_LIST_STATE(state);
+
+		if (strncmp(sb->s_type->name,
+				pfc->fs_type_name, strlen(pfc->fs_type_name)))
+			return;
+
+		pfc->vfsmnt = memfs_get_vfsmount(sb);
+		if (!pfc->vfsmnt)
+			return;
+
+		while (pcpu_list_iterate(sb->euler_s_inodes, &state)) {
+			inode = list_entry(state.curr, struct inode, euler_i_sb_list);
+			spin_lock(&inode->i_lock);
+
+			if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+				(inode->i_mapping->nrpages == 0 && !need_resched())) {
+				spin_unlock(&inode->i_lock);
+				continue;
+			}
+			__iget(inode);
+			spin_unlock(&inode->i_lock);
+			spin_unlock(state.lock);
+
+			memfs_show_file_in_mem_cgroup(pfc, inode);
+
+			iput(toput_inode);
+			toput_inode = inode;
+
+			cond_resched();
+			spin_lock(state.lock);
+		}
+		iput(toput_inode);
+		mntput(pfc->vfsmnt);
+		return ;
+	}
+
+
+
 	struct print_files_control *pfc = data;
 	struct inode *inode, *toput_inode = NULL;
 

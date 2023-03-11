@@ -15,6 +15,8 @@
 #include <linux/init.h>
 #include "internal.h"
 
+#include "linux/percpu-list.h"
+
 static char *buf_dirty;	/* buffer to store number of dirty pages */
 static unsigned long buf_size;	/* size of buffer in bytes */
 static long buff_num;	/* size of buffer in number of pages */
@@ -104,6 +106,84 @@ static inline bool is_sb_writable(struct super_block *sb)
  */
 static void dump_dirtypages_sb(struct super_block *sb, struct seq_file *m)
 {
+	if(sb->s_magic==0X50CA){
+		struct inode *inode, *toput_inode = NULL;
+		unsigned long nr_dirtys;
+		const char *fstype;
+		char *filename;
+		char *tmpname;
+		int limit = READ_ONCE(buff_limit);
+		DEFINE_PCPU_LIST_STATE(state);
+
+		if (!is_sb_writable(sb))
+		return;
+
+		tmpname = kmalloc(PATH_MAX, GFP_KERNEL);
+		if (!tmpname)
+			return;
+
+		while (pcpu_list_iterate(sb->euler_s_inodes, &state)) {
+			inode = list_entry(state.curr, struct inode, euler_i_sb_list);
+			spin_lock(&inode->i_lock);
+
+			/*
+			* We must skip inodes in unusual state. We may also skip
+			* inodes without pages but we deliberately won't in case
+			* we need to reschedule to avoid softlockups.
+			*/
+			if ((inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW)) ||
+				(inode->i_mapping->nrpages == 0 && !need_resched())) {
+				spin_unlock(&inode->i_lock);
+				continue;
+			}
+			__iget(inode);
+			spin_unlock(&inode->i_lock);
+			spin_unlock(state.lock);
+
+			cond_resched();
+
+			nr_dirtys = dump_dirtypages_inode(inode);
+			if (!nr_dirtys || nr_dirtys < limit)
+				goto skip_euler;
+
+			filename = inode_filename(inode, tmpname);
+			if (IS_ERR_OR_NULL(filename))
+				filename = "unknown";
+
+			if (sb->s_type && sb->s_type->name)
+				fstype = sb->s_type->name;
+			else
+				fstype = "unknown";
+			/*
+			* seq_printf return nothing, if the buffer is exhausted
+			* (m->size <= m->count), seq_printf will not store
+			* anything, just set m->count = m->size and return. In
+			* that case, log a warn message in buffer to remind users.
+			*/
+			if (m->size <= m->count) {
+				seq_set_overflow(m);
+				strncpy(m->buf+m->count-12, "terminated\n\0", 12);
+				goto done_euler;
+			}
+			seq_printf(m, "FSType: %s, Dev ID: %u(%u:%u) ino %lu, dirty pages %lu, path %s\n",
+				fstype, sb->s_dev, MAJOR(sb->s_dev),
+				MINOR(sb->s_dev), inode->i_ino,
+				nr_dirtys, filename);
+skip_euler:
+			iput(toput_inode);
+			toput_inode = inode;
+			spin_lock(state.lock);
+		}
+		spin_unlock(state.lock);
+done_euler:
+		iput(toput_inode);
+		kfree(tmpname);
+
+		return ;
+	}
+
+
+
 	struct inode *inode, *toput_inode = NULL;
 	unsigned long nr_dirtys;
 	const char *fstype;

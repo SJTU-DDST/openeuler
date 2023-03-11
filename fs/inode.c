@@ -24,6 +24,8 @@
 #include <trace/events/writeback.h>
 #include "internal.h"
 
+#include "linux/percpu-list.h"
+
 /*
  * Inode locking rules:
  *
@@ -459,6 +461,11 @@ static void inode_lru_list_del(struct inode *inode)
  */
 void inode_sb_list_add(struct inode *inode)
 {
+	if(inode->i_sb->s_magic==0x50CA){
+		pcpu_list_add(&inode->euler_i_sb_list, inode->i_sb->euler_s_inodes);
+		return ;
+	}
+
 	spin_lock(&inode->i_sb->s_inode_list_lock);
 	list_add(&inode->i_sb_list, &inode->i_sb->s_inodes);
 	spin_unlock(&inode->i_sb->s_inode_list_lock);
@@ -467,6 +474,13 @@ EXPORT_SYMBOL_GPL(inode_sb_list_add);
 
 static inline void inode_sb_list_del(struct inode *inode)
 {
+	if(inode->i_sb->s_magic==0x50CA){
+		if (!list_empty(&inode->euler_i_sb_list.list)){
+			pcpu_list_del(&inode->euler_i_sb_list);
+		}
+		return ;
+	}
+
 	if (!list_empty(&inode->i_sb_list)) {
 		spin_lock(&inode->i_sb->s_inode_list_lock);
 		list_del_init(&inode->i_sb_list);
@@ -632,6 +646,48 @@ static void dispose_list(struct list_head *head)
  */
 void evict_inodes(struct super_block *sb)
 {
+	if(sb->s_magic == 0x50CA){
+		struct inode *inode;
+		struct pcpu_list_state state;
+		LIST_HEAD(dispose);
+again_euler:
+		init_pcpu_list_state(&state);
+		while (pcpu_list_iterate(sb->euler_s_inodes, &state)) {
+			inode = list_entry(state.curr, struct inode, euler_i_sb_list);
+			if (atomic_read(&inode->i_count))
+				continue;
+
+			spin_lock(&inode->i_lock);
+			if (inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE)) {
+				spin_unlock(&inode->i_lock);
+				continue;
+			}
+
+			inode->i_state |= I_FREEING;
+			inode_lru_list_del(inode);
+			spin_unlock(&inode->i_lock);
+			list_add(&inode->i_lru, &dispose);
+
+			/*
+			* We can have a ton of inodes to evict at unmount time given
+			* enough memory, check to see if we need to go to sleep for a
+			* bit so we don't livelock.
+			*/
+			if (need_resched()) {
+				spin_unlock(state.lock);
+				cond_resched();
+				dispose_list(&dispose);
+				goto again_euler;
+			}
+		}
+
+		dispose_list(&dispose);
+		return ;		
+	}
+
+
+
+
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
 
@@ -682,6 +738,50 @@ EXPORT_SYMBOL_GPL(evict_inodes);
  */
 int invalidate_inodes(struct super_block *sb, bool kill_dirty)
 {
+	if(sb->s_magic == 0x50CA){
+		int busy = 0;
+		struct inode *inode;
+		LIST_HEAD(dispose);
+		DEFINE_PCPU_LIST_STATE(state);
+
+again_euler:
+		while (pcpu_list_iterate(sb->euler_s_inodes, &state)) {
+			inode = list_entry(state.curr, struct inode, euler_i_sb_list);
+			spin_lock(&inode->i_lock);
+			if (inode->i_state & (I_NEW | I_FREEING | I_WILL_FREE)) {
+				spin_unlock(&inode->i_lock);
+				continue;
+			}
+			if (inode->i_state & I_DIRTY_ALL && !kill_dirty) {
+				spin_unlock(&inode->i_lock);
+				busy = 1;
+				continue;
+			}
+			if (atomic_read(&inode->i_count)) {
+				spin_unlock(&inode->i_lock);
+				busy = 1;
+				continue;
+			}
+
+			inode->i_state |= I_FREEING;
+			inode_lru_list_del(inode);
+			spin_unlock(&inode->i_lock);
+			list_add(&inode->i_lru, &dispose);
+			if (need_resched()) {
+				spin_unlock(state.lock);
+				cond_resched();
+				dispose_list(&dispose);
+				goto again_euler;
+			}
+		}
+
+		dispose_list(&dispose);
+
+		return busy;
+	}
+
+
+
 	int busy = 0;
 	struct inode *inode, *next;
 	LIST_HEAD(dispose);
@@ -939,7 +1039,11 @@ struct inode *new_inode_pseudo(struct super_block *sb)
 		spin_lock(&inode->i_lock);
 		inode->i_state = 0;
 		spin_unlock(&inode->i_lock);
-		INIT_LIST_HEAD(&inode->i_sb_list);
+		if(sb->s_magic==0x50CA){
+			init_pcpu_list_node(&inode->euler_i_sb_list);
+		}else{
+			INIT_LIST_HEAD(&inode->i_sb_list);
+		}
 	}
 	return inode;
 }
@@ -960,7 +1064,13 @@ struct inode *new_inode(struct super_block *sb)
 {
 	struct inode *inode;
 
-	spin_lock_prefetch(&sb->s_inode_list_lock);
+    if(sb->s_magic == 0X50CA){
+		;
+	}else{
+		spin_lock_prefetch(&sb->s_inode_list_lock);
+	}
+
+
 
 	inode = new_inode_pseudo(sb);
 	if (inode)

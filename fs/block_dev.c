@@ -36,6 +36,8 @@
 #include <linux/suspend.h>
 #include "internal.h"
 
+#include <linux/percpu-list.h>
+
 struct bdev_inode {
 	struct block_device bdev;
 	struct inode vfs_inode;
@@ -979,6 +981,18 @@ struct block_device *bdget_part(struct hd_struct *part)
 
 long nr_blockdev_pages(void)
 {
+	if(blockdev_superblock->s_magic == 0x50CA){
+		struct inode *inode;
+		long ret = 0;
+		DEFINE_PCPU_LIST_STATE(state);
+
+		while (pcpu_list_iterate(blockdev_superblock->euler_s_inodes, &state)){
+			inode  = list_entry(state.curr, struct inode, euler_i_sb_list);
+			ret += inode->i_mapping->nrpages;
+		}
+		return ret;
+	}
+
 	struct inode *inode;
 	long ret = 0;
 
@@ -2168,6 +2182,50 @@ EXPORT_SYMBOL(__invalidate_device);
 
 void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
 {
+	if(blockdev_superblock->s_magic == 0x50CA){
+		struct inode *inode, *old_inode = NULL;
+		DEFINE_PCPU_LIST_STATE(state);
+
+		while (pcpu_list_iterate(blockdev_superblock->euler_s_inodes, &state)) {
+			struct address_space *mapping;
+			struct block_device *bdev;
+			inode   = list_entry(state.curr, struct inode, euler_i_sb_list);
+			mapping = inode->i_mapping;
+
+			spin_lock(&inode->i_lock);
+			if (inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW) ||
+				mapping->nrpages == 0) {
+				spin_unlock(&inode->i_lock);
+				continue;
+			}
+			__iget(inode);
+			spin_unlock(&inode->i_lock);
+			spin_unlock(state.lock);
+			/*
+			* We hold a reference to 'inode' so it couldn't have been
+			* removed from s_inodes list while we dropped the
+			* s_inode_list_lock  We cannot iput the inode now as we can
+			* be holding the last reference and we cannot iput it under
+			* s_inode_list_lock. So we keep the reference and iput it
+			* later.
+			*/
+			iput(old_inode);
+			old_inode = inode;
+			bdev = I_BDEV(inode);
+
+			mutex_lock(&bdev->bd_mutex);
+			if (bdev->bd_openers)
+				func(bdev, arg);
+			mutex_unlock(&bdev->bd_mutex);
+			spin_lock(state.lock);
+		}
+		iput(old_inode);
+		return ;
+	}
+
+
+
+
 	struct inode *inode, *old_inode = NULL;
 
 	spin_lock(&blockdev_superblock->s_inode_list_lock);
