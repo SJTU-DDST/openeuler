@@ -26,6 +26,7 @@
 
 #include <linux/byteorder/generic.h>
 #include <linux/percpu.h>
+#include <linux/myhash.h>
 
 /*
  * Inode locking rules:
@@ -463,14 +464,17 @@ static void inode_lru_list_del(struct inode *inode)
 void inode_sb_list_add(struct inode *inode)//eulerfs_trick
 {
 	if(inode->i_sb->s_magic == 0x50CA){
-		int cpu;
+		__u64 hash;
+		int index;
 		spinlock_t *lock;
-		cpu = get_cpu();
-		put_cpu();
-		lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, cpu);
+		struct list_head *list;
+		hash = newhash((__u64)inode,(__u64)sizeof(struct inode *));
+		index = getindex(hash);
+		lock = &(inode->i_sb->eulerfs_s_inode_list_lock[index]);
+		list = &(inode->i_sb->eulerfs_s_inodes[index]);
+		inode->i_sb_list_num = index;
 		spin_lock(lock);
-		list_add(&inode->i_sb_list, per_cpu_ptr(inode->i_sb->eulerfs_s_inodes, cpu));
-		inode->i_sb_list_cpu = cpu;
+		list_add(&inode->i_sb_list, list);
 		spin_unlock(lock);
 		return ;
 	}
@@ -485,9 +489,10 @@ static inline void inode_sb_list_del(struct inode *inode)//eulerfs_trick
 {
 	if(inode->i_sb->s_magic == 0x50CA){
 		if (!list_empty(&inode->i_sb_list)) {
-			int cpu;
+			int index;
 			spinlock_t *lock;
-			lock = per_cpu_ptr(inode->i_sb->eulerfs_s_inode_list_lock, inode->i_sb_list_cpu);
+			index = inode->i_sb_list_num;
+			lock = &(inode->i_sb->eulerfs_s_inode_list_lock[index]);
 			spin_lock(lock);
 			list_del_init(&inode->i_sb_list);
 			spin_unlock(lock);
@@ -666,13 +671,13 @@ void evict_inodes(struct super_block *sb)//euler_trick
 
 again_euler:
 	if(sb->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
+		//int index;
 		struct list_head *head;
 		spinlock_t *lock;
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry_safe(inode, next, head, i_sb_list){
 				if (atomic_read(&inode->i_count))
@@ -696,7 +701,7 @@ again_euler:
 					goto again_euler;
 				}
 			}
-			spin_unlock(lock);				
+			spin_unlock(lock);		
 		}
 		dispose_list(&dispose);
 		return ;
@@ -755,13 +760,13 @@ int invalidate_inodes(struct super_block *sb, bool kill_dirty)//euler_trick
 
 again_euler:
 	if(sb->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
+			
 			spin_lock(lock);
 			list_for_each_entry_safe(inode, next, head, i_sb_list){
 				spin_lock(&inode->i_lock);
@@ -791,7 +796,7 @@ again_euler:
 					goto again_euler;
 				}
 			}
-			spin_unlock(lock);				
+			spin_unlock(lock);
 		}
 		dispose_list(&dispose);
 

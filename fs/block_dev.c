@@ -38,6 +38,7 @@
 
 #include <linux/byteorder/generic.h>
 #include <linux/percpu.h>
+#include <linux/myhash.h>
 
 struct bdev_inode {
 	struct block_device bdev;
@@ -986,19 +987,18 @@ long nr_blockdev_pages(void)//eulerfs_trick
 	long ret = 0;
 	
 	if(blockdev_superblock->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry(inode, head, i_sb_list)
 				ret += inode->i_mapping->nrpages;
 			spin_unlock(lock);
 		}
-		return ret;	
+		return ret;
 	}
 	
 	spin_lock(&blockdev_superblock->s_inode_list_lock);
@@ -2190,13 +2190,12 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eule
 	struct inode *inode, *old_inode = NULL;
 	
 	if(blockdev_superblock->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(blockdev_superblock->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(blockdev_superblock->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry(inode, head, i_sb_list){
 				struct address_space *mapping = inode->i_mapping;
@@ -2220,7 +2219,7 @@ void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)//eule
 					func(bdev, arg);
 				mutex_unlock(&bdev->bd_mutex);
 			}
-			spin_unlock(lock);				
+			spin_unlock(lock);
 		}
 		iput(old_inode);
 		return ;	
