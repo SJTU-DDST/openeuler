@@ -86,6 +86,7 @@
 
 #include <linux/byteorder/generic.h>
 #include <linux/percpu.h>
+#include <linux/myhash.h>
 
 /*
  * There are five quota SMP locks:
@@ -969,16 +970,13 @@ static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 	int reserved = 0;
 #endif
 	int err = 0;
-	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		printk("%s:enter eulerfs branch\n", __func__);
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry(inode, head, i_sb_list){
 				spin_lock(&inode->i_lock);
@@ -1007,7 +1005,7 @@ static int add_dquot_ref(struct super_block *sb, int type)//eulerfs_trick
 				cond_resched();
 				spin_lock(lock);
 			}
-			spin_unlock(lock);				
+			spin_unlock(lock);
 		}
 		iput(old_inode);
 out_euler:
@@ -1129,16 +1127,13 @@ static void remove_dquot_ref(struct super_block *sb, int type,
 	int reserved = 0;
 #endif
 
-	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		printk("%s:enter eulerfs branch\n", __func__);
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry(inode, head, i_sb_list){
 
@@ -1161,7 +1156,7 @@ static void remove_dquot_ref(struct super_block *sb, int type,
 				"inconsistent. Please run quotacheck(8).\n", sb->s_id);
 		}
 #endif
-		return ;	
+		return ;		
 	}
 
 

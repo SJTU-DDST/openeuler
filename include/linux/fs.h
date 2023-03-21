@@ -694,7 +694,7 @@ struct inode {
 #endif
 	struct list_head	i_lru;		/* inode LRU list */
 	struct list_head	i_sb_list;
-	int         i_sb_list_cpu;
+	int         i_sb_list_num;
 	struct list_head	i_wb_list;	/* backing dev writeback list */
 	union {
 		struct hlist_head	i_dentry;
@@ -1586,7 +1586,7 @@ struct super_block {
 	struct list_head	s_inodes;	/* all inodes */
 	
 	spinlock_t      *eulerfs_s_inode_list_lock;
-	struct list_head    *eulerfs_s_inodes;   /*inodes for eulerfs*/
+	struct list_head    *eulerfs_s_inodes;   /* inodes for eulerfs */
 
 	spinlock_t		s_inode_wblist_lock;
 	struct list_head	s_inodes_wb;	/* writeback inodes */

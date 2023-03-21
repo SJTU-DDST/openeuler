@@ -13,6 +13,7 @@
 
 #include <linux/byteorder/generic.h>
 #include <linux/percpu.h>
+#include <linux/myhash.h>
 
 /* A global variable is a bit ugly, but it keeps the code simple */
 int sysctl_drop_caches;
@@ -21,16 +22,13 @@ static void drop_pagecache_sb(struct super_block *sb, void *unused)//eulerfs_tri
 {
 	struct inode *inode, *toput_inode = NULL;
 
-	printk("%s\n", __func__);
 	if(sb->s_magic == 0x50CA){
-		const struct cpumask *mask = cpumask_of_node(numa_node_id());
-		int cpu;
 		struct list_head *head;
 		spinlock_t *lock;
-		printk("%s:enter eulerfs branch\n", __func__);
-		for_each_cpu(cpu, mask){
-			head = per_cpu_ptr(sb->eulerfs_s_inodes, cpu);
-			lock = per_cpu_ptr(sb->eulerfs_s_inode_list_lock, cpu);
+		int i;
+		for(i = 0; i < 512; i++){
+			head = &(sb->eulerfs_s_inodes[i]);
+			lock = &(sb->eulerfs_s_inode_list_lock[i]);
 			spin_lock(lock);
 			list_for_each_entry(inode, head, i_sb_list){
 				spin_lock(&inode->i_lock);
@@ -52,7 +50,7 @@ static void drop_pagecache_sb(struct super_block *sb, void *unused)//eulerfs_tri
 				cond_resched();
 				spin_lock(lock);
 			}
-			spin_unlock(lock);				
+			spin_unlock(lock);	
 		}
 		iput(toput_inode);
 		return ;

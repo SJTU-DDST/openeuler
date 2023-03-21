@@ -183,6 +183,8 @@ static void destroy_unused_super(struct super_block *s)
 	up_write(&s->s_umount);
 	list_lru_destroy(&s->s_dentry_lru);
 	list_lru_destroy(&s->s_inode_lru);
+	kfree(s->eulerfs_s_inode_list_lock);
+	kfree(s->eulerfs_s_inodes);
 	security_sb_free(s);
 	put_user_ns(s->s_user_ns);
 	kfree(s->s_subtype);
@@ -206,7 +208,6 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 	struct super_block *s = kzalloc(sizeof(struct super_block),  GFP_USER);
 	static const struct super_operations default_op;
 	int i;
-	int cpu;
 
 	if (!s)
 		return NULL;
@@ -253,13 +254,23 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 
 	//euler_trick
 
-	s->eulerfs_s_inode_list_lock = alloc_percpu(spinlock_t);
-	for_each_possible_cpu(cpu)
-		spin_lock_init(per_cpu_ptr(s->eulerfs_s_inode_list_lock, cpu));
+	s->eulerfs_s_inode_list_lock = kzalloc(sizeof(spinlock_t) * 512,  GFP_USER);
+	for(i = 0; i < 512; i++){
+		spin_lock_init(&(s->eulerfs_s_inode_list_lock[i]));
+	}
 
-	s->eulerfs_s_inodes = alloc_percpu(struct list_head);
-	for_each_possible_cpu(cpu)
-		INIT_LIST_HEAD(per_cpu_ptr(s->eulerfs_s_inodes, cpu));
+	s->eulerfs_s_inodes = kzalloc(sizeof(struct list_head) * 512, GFP_USER);
+	for(i = 0; i < 512; i++){
+		INIT_LIST_HEAD(&(s->eulerfs_s_inodes[i]));
+	}
+
+	//s->eulerfs_s_inode_list_lock = alloc_percpu(spinlock_t);
+	//for_each_possible_cpu(cpu)
+	//	spin_lock_init(per_cpu_ptr(s->eulerfs_s_inode_list_lock, cpu));
+
+	//s->eulerfs_s_inodes = alloc_percpu(struct list_head);
+	//for_each_possible_cpu(cpu)
+	//	INIT_LIST_HEAD(per_cpu_ptr(s->eulerfs_s_inodes, cpu));
 
 	spin_lock_init(&s->s_inode_list_lock);
 	INIT_LIST_HEAD(&s->s_inodes_wb);
@@ -478,11 +489,25 @@ void generic_shutdown_super(struct super_block *sb)
 		if (sop->put_super)
 			sop->put_super(sb);
 
-		if (!list_empty(&sb->s_inodes)) {
-			printk("VFS: Busy inodes after unmount of %s. "
-			   "Self-destruct in 5 seconds.  Have a nice day...\n",
-			   sb->s_id);
+		if(sb->s_magic == 0x50CA){
+			int i;
+			for(i = 0; i < 512; i++){
+				if(!list_empty(&(sb->eulerfs_s_inodes[i]))){
+					printk("eulerfs alert!!!\nVFS: Busy inodes after unmount of %s. "
+					"Self-destruct in 5 seconds.  Have a nice day...\n",
+					sb->s_id);
+					break;
+				}
+			}
+		}else{
+			if (!list_empty(&sb->s_inodes)) {
+				printk("VFS: Busy inodes after unmount of %s. "
+				"Self-destruct in 5 seconds.  Have a nice day...\n",
+				sb->s_id);
+			}
 		}
+
+		
 	}
 	spin_lock(&sb_lock);
 	/* should be initialized for __put_super_and_need_restart() */
