@@ -27,6 +27,7 @@
 #include <linux/byteorder/generic.h>
 #include <linux/percpu.h>
 #include <linux/myhash.h>
+#include <linux/kernel.h>
 
 /*
  * Inode locking rules:
@@ -61,8 +62,16 @@
 
 static unsigned int i_hash_mask __read_mostly;
 static unsigned int i_hash_shift __read_mostly;
-static struct hlist_head *inode_hashtable __read_mostly;
-static spinlock_t *per_bucket_lock;
+
+struct hashlist {
+	struct hlist_head head_bucket;
+	spinlock_t lock_bucket; 
+};
+
+static struct hashlist *my_inode_hashtable;
+
+//static struct hlist_head *inode_hashtable __read_mostly;
+//static spinlock_t *per_bucket_lock;
 
 /*
  * Empty aops. Can be used for the cases where the user does not
@@ -532,8 +541,9 @@ static unsigned long hash(struct super_block *sb, unsigned long hashval)
 void __insert_inode_hash(struct inode *inode, unsigned long hashval)
 {
 	unsigned long hashino = hash(inode->i_sb, hashval);
-	struct hlist_head *b = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *b = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 
 	spin_lock(lock);
 	spin_lock(&inode->i_lock);
@@ -552,7 +562,9 @@ EXPORT_SYMBOL(__insert_inode_hash);
  */
 void __remove_inode_hash(struct inode *inode)
 {
-	spinlock_t *lock = per_bucket_lock + inode->hashino;
+	unsigned long hashino = inode->hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	spinlock_t *lock = &(hashnode->lock_bucket);
 
 	spin_lock(lock);
 	spin_lock(&inode->i_lock);
@@ -948,8 +960,9 @@ static struct inode *find_inode(struct super_block *sb,
 				int (*test)(struct inode *, void *),
 				void *data)
 {
-	unsigned long hashino = head - inode_hashtable;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = container_of(head, struct hashlist, head_bucket);
+	unsigned long hashino = hashnode - my_inode_hashtable;
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode = NULL;
 
 repeat:
@@ -986,8 +999,9 @@ repeat:
 static struct inode *find_inode_fast(struct super_block *sb,
 				struct hlist_head *head, unsigned long ino)
 {
-	unsigned long hashino = head - inode_hashtable;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = container_of(head, struct hashlist, head_bucket);
+	unsigned long hashino = hashnode - my_inode_hashtable;
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode = NULL;
 
 repeat:
@@ -1220,8 +1234,9 @@ struct inode *inode_insert5(struct inode *inode, unsigned long hashval,
 			    int (*set)(struct inode *, void *), void *data)
 {
 	unsigned long hashino = hash(inode->i_sb, hashval);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *old;
 	bool creating = inode->i_state & I_CREATING;
 
@@ -1320,8 +1335,9 @@ EXPORT_SYMBOL(iget5_locked);
 struct inode *iget_locked(struct super_block *sb, unsigned long ino)
 {
 	unsigned hashino = hash(sb, ino);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t* lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
+	spinlock_t* lock = &(hashnode->lock_bucket);
 	struct inode *inode;
 again:
 	inode = find_inode_fast(sb, head, ino);
@@ -1387,8 +1403,9 @@ EXPORT_SYMBOL(iget_locked);
 static int test_inode_iunique(struct super_block *sb, unsigned long ino)
 {
 	unsigned long hashino = hash(sb, ino);
-	struct hlist_head *b = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *b = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode;
 
 	spin_lock(lock);
@@ -1479,7 +1496,9 @@ EXPORT_SYMBOL(igrab);
 struct inode *ilookup5_nowait(struct super_block *sb, unsigned long hashval,
 		int (*test)(struct inode *, void *), void *data)
 {
-	struct hlist_head *head = inode_hashtable + hash(sb, hashval);
+	unsigned long hashino = hash(sb, hashval);
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
 	struct inode *inode;
 
 	inode = find_inode(sb, head, test, data);
@@ -1532,7 +1551,9 @@ EXPORT_SYMBOL(ilookup5);
  */
 struct inode *ilookup(struct super_block *sb, unsigned long ino)
 {
-	struct hlist_head *head = inode_hashtable + hash(sb, ino);
+	unsigned long hashino = hash(sb, ino);
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
 	struct inode *inode;
 again:
 	inode = find_inode_fast(sb, head, ino);
@@ -1580,8 +1601,9 @@ struct inode *find_inode_nowait(struct super_block *sb,
 				void *data)
 {
 	unsigned long hashino = hash(sb, hashval);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket); 
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode, *ret_inode = NULL;
 	int mval;
 
@@ -1627,8 +1649,9 @@ struct inode *find_inode_rcu(struct super_block *sb, unsigned long hashval,
 			     int (*test)(struct inode *, void *), void *data)
 {
 	unsigned long hashino = hash(sb, hashval);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode;
 
 	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
@@ -1671,8 +1694,9 @@ struct inode *find_inode_by_ino_rcu(struct super_block *sb,
 				    unsigned long ino)
 {
 	unsigned long hashino = hash(sb, ino);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 	struct inode *inode;
 
 	RCU_LOCKDEP_WARN(!rcu_read_lock_held(),
@@ -1697,8 +1721,9 @@ int insert_inode_locked(struct inode *inode)
 	struct super_block *sb = inode->i_sb;
 	ino_t ino = inode->i_ino;
 	unsigned long hashino = hash(sb, ino);
-	struct hlist_head *head = inode_hashtable + hashino;
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	struct hlist_head *head = &(hashnode->head_bucket);
+	spinlock_t *lock = &(hashnode->lock_bucket);
 
 	while (1) {
 		struct inode *old = NULL;
@@ -2203,7 +2228,9 @@ EXPORT_SYMBOL(inode_needs_sync);
  */
 static void __wait_on_freeing_inode(struct inode *inode, unsigned long hashino)
 {
-	spinlock_t *lock = per_bucket_lock + hashino;
+	struct hashlist *hashnode = my_inode_hashtable + hashino;
+	spinlock_t *lock = &(hashnode->lock_bucket);
+
 	wait_queue_head_t *wq;
 	DEFINE_WAIT_BIT(wait, &inode->i_state, __I_NEW);
 	wq = bit_waitqueue(&inode->i_state, __I_NEW);
@@ -2238,9 +2265,9 @@ void __init inode_init_early(void)
 	if (hashdist)
 		return;
 
-	inode_hashtable =
+	my_inode_hashtable =
 		alloc_large_system_hash("Inode-cache",
-					sizeof(struct hlist_head),
+					sizeof(struct hashlist),
 					ihash_entries,
 					14,
 					HASH_EARLY | HASH_ZERO,
@@ -2249,11 +2276,10 @@ void __init inode_init_early(void)
 					0,
 					0);
 	
-	per_bucket_lock = kzalloc(sizeof(spinlock_t) << i_hash_shift, GFP_USER);
 	for(i = 0; i < (1 << i_hash_shift); i++){
-		spin_lock_init(&(per_bucket_lock[i]));
+		spin_lock_init(&(my_inode_hashtable[i].lock_bucket));
 	}
-	//assume success
+
 }
 
 void __init inode_init(void)
@@ -2271,9 +2297,9 @@ void __init inode_init(void)
 	if (!hashdist)
 		return;
 
-	inode_hashtable =
+	my_inode_hashtable =
 		alloc_large_system_hash("Inode-cache",
-					sizeof(struct hlist_head),
+					sizeof(struct hashlist),
 					ihash_entries,
 					14,
 					HASH_ZERO,
@@ -2282,11 +2308,10 @@ void __init inode_init(void)
 					0,
 					0);
 
-	per_bucket_lock = kzalloc(sizeof(spinlock_t) << i_hash_shift, GFP_USER);
 	for(i = 0; i < (1 << i_hash_shift); i++){
-		spin_lock_init(&(per_bucket_lock[i]));
+		spin_lock_init(&(my_inode_hashtable[i].lock_bucket));
 	}
-	//assume success
+
 }
 
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
