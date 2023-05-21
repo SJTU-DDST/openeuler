@@ -833,6 +833,9 @@ struct ext4_inode {
 	__le32  i_crtime_extra; /* extra FileCreationtime (nsec << 2 | epoch) */
 	__le32  i_version_hi;	/* high 32 bits for 64-bit version */
 	__le32	i_projid;	/* Project ID */
+#ifdef CONFIG_DAXVM
+   __le64  ppgd;     
+#endif
 };
 
 struct move_extent {
@@ -1165,6 +1168,16 @@ struct ext4_inode_info {
 	__u32 i_csum_seed;
 
 	kprojid_t i_projid;
+
+#ifdef CONFIG_DAXVM     
+  void *ppgd;
+  unsigned long ppt_ceiling;
+  u16 ppt_level;
+  
+  void *vpgd;
+  unsigned long vpt_ceiling;
+  u16 vpt_level;
+#endif
 };
 
 /*
@@ -1675,6 +1688,12 @@ struct ext4_sb_info {
 	int s_fc_debug_max_replay;
 #endif
 	struct ext4_fc_replay_state s_fc_replay_state;
+
+#ifdef CONFIG_DAXVM
+	phys_addr_t dax_phys_addr;
+  void  *dax_virt_addr;
+	long  dax_size;
+#endif
 };
 
 static inline struct ext4_sb_info *EXT4_SB(struct super_block *sb)
@@ -3712,6 +3731,10 @@ extern const struct iomap_ops ext4_iomap_ops;
 extern const struct iomap_ops ext4_iomap_overwrite_ops;
 extern const struct iomap_ops ext4_iomap_report_ops;
 
+#ifdef CONFIG_DAXVM
+extern const struct iomap_ops ext4_dax_iomap_ops;
+#endif
+
 static inline int ext4_buffer_uptodate(struct buffer_head *bh)
 {
 	/*
@@ -3729,5 +3752,12 @@ static inline int ext4_buffer_uptodate(struct buffer_head *bh)
 
 #define EFSBADCRC	EBADMSG		/* Bad CRC detected */
 #define EFSCORRUPTED	EUCLEAN		/* Filesystem is corrupted */
+
+#ifdef CONFIG_DAXVM
+extern int ext4_persistent_page_tables;
+extern atomic64_t ext4_pmem_pages;
+extern atomic64_t ext4_dram_pages;
+extern int ext4_zeroout;
+#endif
 
 #endif	/* _EXT4_H */

@@ -12,6 +12,13 @@
 #define MAP_NORESERVE	0x4000		/* don't check for reservations */
 #define MAP_PA32BIT		0x400000        /* physical address is within 4G */
 
+#ifdef CONFIG_DAXVM
+#define MAP_DAXVM			                    0x400000		
+#define MAP_DAXVM_EPHEMERAL     	        0x4000000    
+#define MAP_DAXVM_EPHEMERAL_HEAP     	    0x8000000    
+#define MAP_DAXVM_BATCHING		            0x200000		
+#endif
+
 /*
  * Bits [26:31] are reserved, see asm-generic/hugetlb_encode.h
  * for MAP_HUGETLB usage

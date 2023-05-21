@@ -35,6 +35,13 @@
 
 #include <trace/events/ext4.h>
 
+#ifdef CONFIG_DAXVM
+	#include <linux/pfn_t.h>
+	#include "./daxvm/daxvm.h"
+	#define PPT 0
+	int ext4_zeroout=1;
+#endif
+
 /*
  * used by extent splitting.
  */
@@ -4106,6 +4113,9 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	unsigned int allocated_clusters = 0;
 	struct ext4_allocation_request ar;
 	ext4_lblk_t cluster_offset;
+#ifdef CONFIG_DAXVM
+  struct ext4_inode_info *sih = EXT4_I(inode);
+#endif
 
 	ext_debug(inode, "blocks %u/%u requested\n", map->m_lblk, map->m_len);
 	trace_ext4_ext_map_blocks_enter(inode, map->m_lblk, map->m_len, flags);
@@ -4387,6 +4397,36 @@ got_allocated_blocks:
 	map->m_len = ar.len;
 	allocated = map->m_len;
 	ext4_ext_show_leaf(inode, path);
+
+#ifdef CONFIG_DAXVM
+	if (IS_DAX(inode) && sih->jinode && allocated){
+		if (ext4_persistent_page_tables){
+						ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 1);
+/*
+      if(ext4_persistent_page_tables == 2)
+				ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 0);
+			else if(((map->m_lblk+map->m_len)<<PAGE_SHIFT) <= ext4_daxvm_pmem_threshold && !sih->ppgd)
+				ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 0);
+			else {
+          //migrated temporarily due to TLB miss overheads
+					if(sih->vpgd && sih->ppgd) {
+						ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 0);
+						ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 1);
+					}
+          else if (sih->vpgd){
+						ext4_daxvm_migrate_file_pgtables(handle, inode, 1);
+            ext4_daxvm_delete_volatile_tables(handle, inode, 0, (map->m_lblk+map->m_len)<<PAGE_SHIFT, 1);
+						ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 1);
+          }
+					else {
+						ext4_daxvm_build_tables(handle, inode, map->m_len, map->m_pblk, map->m_lblk, 1);
+					}
+			}
+*/
+		}
+	}
+#endif
+
 out:
 	ext4_ext_drop_refs(path);
 	kfree(path);
@@ -6157,3 +6197,29 @@ int ext4_ext_clear_bb(struct inode *inode)
 
 	return 0;
 }
+
+#ifdef CONFIG_DAXVM
+void ext4_daxvm_build_tables_from_tree(struct inode *inode)
+{
+  	struct ext4_ext_path *path;
+        int depth = ext_depth(inode);
+        struct ext4_extent_header *eh;
+        struct ext4_extent *ex;
+        int i;
+  	unsigned int block=0;
+
+  	if(!inode) return;
+  	if(!EXT4_I(inode)) return;
+  	path = ext4_find_extent(inode,block,NULL,0);
+  	if (!path)
+                return;
+        eh = path[depth].p_hdr;
+        ex = EXT_FIRST_EXTENT(eh);
+
+  	for (i = 0; i < le16_to_cpu(eh->eh_entries); i++, ex++) {
+    		ext4_daxvm_build_tables(NULL, inode, ext4_ext_get_actual_len(ex), ext4_ext_pblock(ex), 
+										le32_to_cpu(ex->ee_block), 0);
+	}
+}
+EXPORT_SYMBOL(ext4_daxvm_build_tables);
+#endif

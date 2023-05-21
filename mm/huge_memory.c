@@ -574,6 +574,26 @@ static unsigned long __thp_get_unmapped_area(struct file *filp,
 	return ret;
 }
 
+#ifdef CONFIG_DAXVM
+unsigned long daxvm_ephemeral_thp_get_unmapped_area(struct file *filp, unsigned long addr,
+		unsigned long len, unsigned long pgoff, unsigned long flags)
+{
+	loff_t off = (loff_t)pgoff << PAGE_SHIFT;
+
+	if (addr && !(addr % PMD_SIZE)) 
+		 goto out;
+
+	addr = __thp_get_unmapped_area(filp, addr, len, off, flags, PMD_SIZE);
+	
+  if (addr)
+		return addr;
+
+ out:
+	return current->mm->get_unmapped_area(filp, addr, len, pgoff, flags);
+}
+EXPORT_SYMBOL_GPL(daxvm_ephemeral_thp_get_unmapped_area);
+#endif
+
 unsigned long thp_get_unmapped_area(struct file *filp, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags)
 {

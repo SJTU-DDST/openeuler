@@ -113,6 +113,8 @@ static int sixty = 60;
 #endif
 
 static int __maybe_unused neg_one = -1;
+
+static int zero;
 static int __maybe_unused two = 2;
 static int __maybe_unused three = 3;
 static int __maybe_unused four = 4;
@@ -2468,6 +2470,16 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
+#ifdef CONFIG_DAXVM
+	{
+		.procname	= "zombie_max_pages",
+		.data		= &sysctl_max_zombie_pages,
+		.maxlen		= sizeof(sysctl_max_zombie_pages),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+	},
+#endif
 #endif
 #if defined(CONFIG_S390) && defined(CONFIG_SMP)
 	{

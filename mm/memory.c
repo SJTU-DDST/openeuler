@@ -233,6 +233,12 @@ static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
 	pmd = pmd_offset(pud, addr);
 	do {
 		next = pmd_addr_end(addr, end);
+#ifdef CONFIG_DAXVM
+    if (is_pmd_daxvm(*pmd)) {
+      native_pmd_clear(pmd);
+      continue;
+    }
+#endif
 		if (pmd_none_or_clear_bad(pmd))
 			continue;
 		free_pte_range(tlb, pmd, addr);
@@ -1360,10 +1366,41 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 	pmd_t *pmd;
 	unsigned long next;
 
+#ifdef CONFIG_DAXVM
+	if(vma->vm_flags & VM_DAXVM)
+    	barrier();
+#endif
+
 	pmd = pmd_offset(pud, addr);
 	do {
 		next = pmd_addr_end(addr, end);
+	
+#ifdef CONFIG_DAXVM
+		if(!pmd_none(*pmd) && is_pmd_daxvm(*pmd)){
+    			struct mm_struct *mm = tlb->mm;
+    			unsigned long shootdown_address=addr;
+    			unsigned long shootdown_end=next;
+			    spinlock_t *ptl;
+    			flush_tlb_batched_pending(mm);
+    			do {
+        			tlb_remove_tlb_entry(tlb, NULL, shootdown_address);
+    			} while(shootdown_address+=PAGE_SIZE, shootdown_address!=shootdown_end);
+
+			    ptl = pmd_lock(vma->vm_mm,pmd);
+    			native_pmd_clear(pmd);
+			    spin_unlock(ptl);
+			    goto next;
+		}
+#endif
+
 		if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
+#ifdef CONFIG_DAXVM
+			if(is_pmd_daxvm_ephemeral(*pmd) && !pmd_devmap(*pmd)) {
+				if(is_pmd_daxvm(*pmd)) BUG(); //pr_crit("Lala %llu %llu %llu\n", is_pmd_daxvm_ephemeral(*pmd), is_pmd_daxvm(*pmd), pmd_devmap(*pmd));
+					native_pmd_clear(pmd);
+				goto next;
+			}
+#endif
 			if (next - addr != HPAGE_PMD_SIZE)
 				__split_huge_pmd(vma, pmd, addr, false, NULL);
 			else if (zap_huge_pmd(tlb, vma, pmd, addr))
@@ -1510,6 +1547,37 @@ static void unmap_single_vma(struct mmu_gather *tlb,
 	}
 }
 
+#ifdef CONFIG_DAXVM
+void unmap_ephemeral_vmas(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, unsigned long start_addr,
+		unsigned long end_addr)
+{
+	struct mmu_notifier_range range;
+
+	if (!vma->vm_mm) return;
+	// mmu_notifier_range_init(&range, vma->vm_mm, start_addr, end_addr);
+	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma, vma->vm_mm, start_addr, end_addr);
+	mmu_notifier_invalidate_range_start(&range);
+	for ( ; vma && vma->vm_start < end_addr; vma = vma->ephemeral_vm_next)
+		unmap_single_vma(tlb, vma, start_addr, end_addr, NULL);
+	mmu_notifier_invalidate_range_end(&range);
+}
+
+void unmap_zombie_vmas(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, unsigned long start_addr,
+		unsigned long end_addr)
+{
+	struct mmu_notifier_range range;
+
+	// mmu_notifier_range_init(&range, vma->vm_mm, start_addr, end_addr);
+	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma, vma->vm_mm, start_addr, end_addr);
+	mmu_notifier_invalidate_range_start(&range);
+	for ( ; vma && vma->vm_start < end_addr; vma = vma->zombie_vm_next)
+		unmap_single_vma(tlb, vma, start_addr, end_addr, NULL);
+	mmu_notifier_invalidate_range_end(&range);
+}
+#endif
+
 /**
  * unmap_vmas - unmap a range of memory covered by a list of vma's
  * @tlb: address of the caller's struct mmu_gather
@@ -1537,8 +1605,13 @@ void unmap_vmas(struct mmu_gather *tlb,
 	mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma, vma->vm_mm,
 				start_addr, end_addr);
 	mmu_notifier_invalidate_range_start(&range);
-	for ( ; vma && vma->vm_start < end_addr; vma = vma->vm_next)
+	for ( ; vma && vma->vm_start < end_addr; vma = vma->vm_next) {
+#ifdef CONFIG_DAXVM
+		if(vma->vm_flags & VM_DAXVM_EPHEMERAL_HEAP && vma->ephemeral_mmap && end_addr>0)
+			unmap_ephemeral_vmas(tlb, vma->ephemeral_mmap, start_addr, end_addr);
+#endif
 		unmap_single_vma(tlb, vma, start_addr, end_addr, NULL);
+	}
 	mmu_notifier_invalidate_range_end(&range);
 }
 
@@ -3799,10 +3872,17 @@ static vm_fault_t __do_fault(struct vm_fault *vmf)
  * inside of pmd_none_or_trans_huge_or_clear_bad(). This will end up correctly
  * returning 1 but not before it spams dmesg with the pmd_clear_bad() output.
  */
+#ifndef CONFIG_DAXVM
 static int pmd_devmap_trans_unstable(pmd_t *pmd)
 {
 	return pmd_devmap(*pmd) || pmd_trans_unstable(pmd);
 }
+#else
+static int pmd_devmap_trans_unstable(pmd_t *pmd)
+{
+	return pmd_devmap(*pmd) || (!is_pmd_daxvm(*pmd) && pmd_trans_unstable(pmd));
+}
+#endif
 
 static vm_fault_t pte_alloc_one_map(struct vm_fault *vmf)
 {
@@ -4415,6 +4495,38 @@ out:
 
 static inline vm_fault_t create_huge_pmd(struct vm_fault *vmf)
 {
+#ifdef CONFIG_DAXVM
+	vm_fault_t ret;
+	unsigned int dirty = vmf->flags & FAULT_FLAG_WRITE;
+  if (vmf->vma->vm_flags & VM_DAXVM_EPHEMERAL_HEAP){
+			struct vm_area_struct *ephemeral_mm, *ephemeral_vma;
+			ephemeral_mm = find_ephemeral_mm(current->mm,vmf->address);
+      BUG_ON(!ephemeral_mm);
+			spin_lock(&ephemeral_mm->ephemeral_lock);
+			ephemeral_vma = find_ephemeral_vma(ephemeral_mm, vmf->address);
+      BUG_ON(!ephemeral_vma);
+			spin_unlock(&ephemeral_mm->ephemeral_lock);
+			vmf->vma=ephemeral_vma;	
+			vmf->pgoff = linear_page_index(ephemeral_vma, vmf->address);
+			vmf->gfp_mask = __get_fault_gfp_mask(ephemeral_vma);
+		}
+
+    if((vmf->vma->vm_flags & VM_DAXVM)) {
+      //regular faults (maybe the file expanded)
+      if(pmd_none(*vmf->pmd)) {
+			  ret = vmf->vma->vm_ops->huge_fault(vmf, PE_SIZE_PMD);
+        if (ret == VM_FAULT_NOPAGE) return ret;
+        //pr_crit("Boohoo1 huge %d 0x%llx-0x%llx 0x%llx!\n", vmf->vma->vm_file->f_inode->i_ino, vmf->vma->vm_start, vmf->vma->vm_end, vmf->pgoff);
+      }
+      //permission faults
+      else if(is_pmd_daxvm(*vmf->pmd) && dirty && !pmd_write(*vmf->pmd) && ((vmf->vma->vm_flags & (VM_WRITE|VM_SHARED)) == (VM_WRITE|VM_SHARED))) {
+			  ret = vmf->vma->vm_ops->huge_fault(vmf, PE_SIZE_PMD);
+        if (ret == VM_FAULT_NOPAGE) return ret;
+        //pr_crit("Boohoo2 huge!\n");
+      }
+    }
+#endif
+
 	if (vma_is_anonymous(vmf->vma))
 		return do_huge_pmd_anonymous_page(vmf);
 	if (vmf->vma->vm_ops->huge_fault)
@@ -4582,6 +4694,11 @@ unlock:
 	return 0;
 }
 
+#ifdef CONFIG_DAXVM
+extern struct vm_area_struct *find_ephemeral_mm(struct mm_struct *mm, unsigned long addr);
+extern struct vm_area_struct *find_ephemeral_vma(struct vm_area_struct *mm, unsigned long addr);
+#endif
+
 /*
  * By the time we get here, we already hold the mm semaphore
  *
@@ -4652,6 +4769,37 @@ retry_pud:
 		pmd_t orig_pmd = *vmf.pmd;
 
 		barrier();
+
+#ifdef CONFIG_DAXVM
+  if (vmf.vma->vm_flags & VM_DAXVM_EPHEMERAL_HEAP){
+			struct vm_area_struct *ephemeral_mm, *ephemeral_vma;
+			ephemeral_mm = find_ephemeral_mm(mm,vmf.address);
+      BUG_ON(!ephemeral_mm);
+			spin_lock(&ephemeral_mm->ephemeral_lock);
+			ephemeral_vma = find_ephemeral_vma(ephemeral_mm, vmf.address);
+			spin_unlock(&ephemeral_mm->ephemeral_lock);
+      BUG_ON(!ephemeral_vma);
+			vmf.vma=ephemeral_vma;	
+			vmf.pgoff = linear_page_index(ephemeral_vma, vmf.address);
+			vmf.gfp_mask = __get_fault_gfp_mask(ephemeral_vma);
+		}
+
+    if((vmf.vma->vm_flags & VM_DAXVM)) {
+      //regular faults (maybe the file expanded)
+      if(pmd_none(*vmf.pmd)) {
+			  ret = vmf.vma->vm_ops->huge_fault(&vmf, PE_SIZE_PTE);
+        if (ret == VM_FAULT_NOPAGE) return ret;
+        //pr_crit("Boohoo1 small %d 0x%llx!\n", vmf.vma->vm_file->f_inode->i_ino, vmf.pgoff);
+      }
+      //permission faults
+      else if(is_pmd_daxvm(orig_pmd) && dirty && !pmd_write(orig_pmd) && ((vmf.vma->vm_flags & (VM_WRITE|VM_SHARED)) == (VM_WRITE|VM_SHARED))) {
+			  ret = vmf.vma->vm_ops->huge_fault(&vmf, PE_SIZE_PTE);
+        if (ret == VM_FAULT_NOPAGE) return ret;
+        //pr_crit("Boohoo2 small %d 0x%llx-0x%llx 0x%llx!\n", vmf.vma->vm_file->f_inode->i_ino, vmf.vma->vm_start, vmf.vma->vm_end, vmf.pgoff);
+      }
+    }
+#endif
+
 		if (unlikely(is_swap_pmd(orig_pmd))) {
 			VM_BUG_ON(thp_migration_supported() &&
 					  !is_pmd_migration_entry(orig_pmd));
@@ -4889,7 +5037,11 @@ int follow_invalidate_pte(struct mm_struct *mm, unsigned long address,
 	pmd = pmd_offset(pud, address);
 	VM_BUG_ON(pmd_trans_huge(*pmd));
 
+#ifdef CONFIG_DAXVM
+	if (pmd_huge(*pmd) || is_pmd_daxvm(*pmd)) {
+#else
 	if (pmd_huge(*pmd)) {
+#endif
 		if (!pmdpp)
 			goto out;
 
@@ -4900,7 +5052,11 @@ int follow_invalidate_pte(struct mm_struct *mm, unsigned long address,
 			mmu_notifier_invalidate_range_start(range);
 		}
 		*ptlp = pmd_lock(mm, pmd);
-		if (pmd_huge(*pmd)) {
+#ifdef CONFIG_DAXVM
+	  if (pmd_huge(*pmd) || is_pmd_daxvm(*pmd)) {
+#else
+	  if (pmd_huge(*pmd)) {
+#endif
 			*pmdpp = pmd;
 			return 0;
 		}

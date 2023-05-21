@@ -55,6 +55,10 @@
 #include "mballoc.h"
 #include "fsmap.h"
 
+#ifdef CONFIG_DAXVM
+#define PPT 0
+#endif
+
 #include <uapi/linux/netlink.h>
 #include <net/sock.h>
 #include <net/net_namespace.h>
@@ -1359,6 +1363,15 @@ static struct inode *ext4_alloc_inode(struct super_block *sb)
 	ei->i_datasync_tid = 0;
 	atomic_set(&ei->i_unwritten, 0);
 	INIT_WORK(&ei->i_rsv_conversion_work, ext4_end_io_rsv_work);
+
+#ifdef CONFIG_DAXVM
+  ei->ppgd=NULL;
+  ei->ppt_level=4;
+  ei->ppt_ceiling=0;
+  ei->vpgd=NULL;
+  ei->vpt_level=4;
+  ei->vpt_ceiling=0;
+#endif
 	ext4_fc_init_inode(&ei->vfs_inode);
 	mutex_init(&ei->i_fc_lock);
 	return &ei->vfs_inode;
@@ -4072,6 +4085,9 @@ static void ext4_set_resv_clusters(struct super_block *sb)
 	atomic64_set(&sbi->s_resv_clusters, resv_clusters);
 }
 
+#ifdef CONFIG_DAXVM
+	#include <linux/pfn_t.h>
+#endif
 static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct dax_device *dax_dev = fs_dax_get_by_bdev(sb->s_bdev);
@@ -4102,6 +4118,22 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		goto out_free_base;
 
 	sbi->s_daxdev = dax_dev;
+
+#ifdef CONFIG_DAXVM
+	if(sbi->s_daxdev){
+    void *virt_addr = NULL;
+    pfn_t __pfn_t;
+	
+		sbi->dax_size = dax_direct_access(sbi->s_daxdev, 0, LONG_MAX/PAGE_SIZE, &virt_addr, &__pfn_t) * PAGE_SIZE;
+    if (sbi->dax_size <= 0) 
+      return -EINVAL;
+    sbi->dax_virt_addr = virt_addr;
+    if (!sbi->dax_virt_addr)
+      return -EINVAL;
+    sbi->dax_phys_addr = pfn_t_to_pfn(__pfn_t) << PAGE_SHIFT;
+	}
+#endif
+
 	sbi->s_blockgroup_lock =
 		kzalloc(sizeof(struct blockgroup_lock), GFP_KERNEL);
 	if (!sbi->s_blockgroup_lock)

@@ -48,6 +48,10 @@
 
 #include <trace/events/ext4.h>
 
+#ifdef CONFIG_DAXVM
+#include "./daxvm/daxvm.h"
+#endif
+
 static __u32 ext4_inode_csum(struct inode *inode, struct ext4_inode *raw,
 			      struct ext4_inode_info *ei)
 {
@@ -3312,6 +3316,13 @@ static bool ext4_inode_datasync_dirty(struct inode *inode)
 	return inode->i_state & I_DIRTY_DATASYNC;
 }
 
+#ifdef CONFIG_DAXVM
+static int ext4_iomap_daxvm_get_pfn(struct inode *inode, loff_t pos, size_t size, pfn_t *pfnp)
+{
+	return ext4_daxvm_get_pfn(inode, pos, size, pfnp);
+}
+#endif
+
 static void ext4_set_iomap(struct inode *inode, struct iomap *iomap,
 			   struct ext4_map_blocks *map, loff_t offset,
 			   loff_t length)
@@ -3509,6 +3520,14 @@ const struct iomap_ops ext4_iomap_overwrite_ops = {
 	.iomap_begin		= ext4_iomap_overwrite_begin,
 	.iomap_end		= ext4_iomap_end,
 };
+
+#ifdef CONFIG_DAXVM
+const struct iomap_ops ext4_dax_iomap_ops = {
+	.iomap_begin			= ext4_iomap_begin,
+	.iomap_daxvm_get_pfn		= ext4_iomap_daxvm_get_pfn,
+	.iomap_end			= ext4_iomap_end,
+};
+#endif
 
 static bool ext4_iomap_is_delalloc(struct inode *inode,
 				   struct ext4_map_blocks *map)
@@ -4225,6 +4244,16 @@ int ext4_truncate(struct inode *inode)
 		err = PTR_ERR(handle);
 		goto out_trace;
 	}
+
+#ifdef CONFIG_DAXVM
+	  if (IS_DAX(inode) && EXT4_I(inode)->jinode){
+      if (ext4_persistent_page_tables){
+        //pr_crit("I am here %llu-%llu\n", round_up(inode->i_size,PAGE_SIZE), round_up(EXT4_I(inode)->i_disksize, PAGE_SIZE));
+        //ext4_daxvm_delete_tables(handle, inode, inode->i_sb, round_up(inode->i_size, PAGE_SIZE), round_up(EXT4_I(inode)->i_disksize, PAGE_SIZE),  1);
+        ext4_daxvm_delete_tables(handle, inode, inode->i_sb, round_up(inode->i_size, PAGE_SIZE), 0xffffffffff,  1);
+       }
+     }
+#endif
 
 	if (inode->i_size & (inode->i_sb->s_blocksize - 1))
 		ext4_block_truncate_page(handle, mapping, inode->i_size);

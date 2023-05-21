@@ -56,6 +56,8 @@ obj-$(CONFIG_FHANDLE)		+= fhandle.o
 obj-$(CONFIG_CGROUP_FILES)	+= filescontrol.o
 obj-y				+= iomap/
 
+obj-$(CONFIG_DAXVM)		+=daxvm.o
+
 obj-y				+= quota/
 
 obj-$(CONFIG_PROC_FS)		+= proc/

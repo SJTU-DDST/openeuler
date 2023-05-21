@@ -252,6 +252,9 @@ config X86
 	select PROC_PID_ARCH_STATUS		if PROC_FS
 	imply IMA_SECURE_AND_OR_TRUSTED_BOOT    if EFI
 
+config CONFIG_DAXVM
+	def_bool y
+
 config INSTRUCTION_DECODER
 	def_bool y
 	depends on KPROBES || PERF_EVENTS || UPROBES

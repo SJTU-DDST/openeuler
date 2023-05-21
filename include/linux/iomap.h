@@ -123,6 +123,9 @@ struct iomap_page_ops {
 #define IOMAP_FAULT		(1 << 3) /* mapping for page fault */
 #define IOMAP_DIRECT		(1 << 4) /* direct I/O */
 #define IOMAP_NOWAIT		(1 << 5) /* do not block */
+#ifdef CONFIG_DAXVM
+#define IOMAP_DAXVM		(1 << 6) /* do not block */
+#endif
 
 struct iomap_ops {
 	/*
@@ -142,6 +145,10 @@ struct iomap_ops {
 	 */
 	int (*iomap_end)(struct inode *inode, loff_t pos, loff_t length,
 			ssize_t written, unsigned flags, struct iomap *iomap);
+
+#ifdef CONFIG_DAXVM
+	int (*iomap_daxvm_get_pfn)(struct inode *inode, loff_t pos, size_t size, pfn_t *pfnp);
+#endif
 
 	KABI_RESERVE(1)
 	KABI_RESERVE(2)

@@ -12,6 +12,9 @@ ext4-y	:= balloc.o bitmap.o block_validity.o dir.o ext4_jbd2.o extents.o \
 		super.o symlink.o sysfs.o xattr.o xattr_hurd.o xattr_trusted.o \
 		xattr_user.o fast_commit.o
 
+#obj-$(CONFIG_DAXVM)+= daxvm/daxvm.o daxvm/daxvm_ppt.o daxvm/kthread.o
+obj-$(CONFIG_DAXVM)+= daxvm/daxvm.o daxvm/daxvm_ppt.o daxvm/daxvm_vpt.o
+
 ext4-$(CONFIG_EXT4_FS_POSIX_ACL)	+= acl.o
 ext4-$(CONFIG_EXT4_FS_SECURITY)		+= xattr_security.o
 ext4-inode-test-objs			+= inode-test.o
